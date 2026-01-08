@@ -12,7 +12,16 @@ def image_preprocessing(img):
     
     gray_scales = cv2.cvtColor(img,cv2.COLOR_BGR2GRAY)
     gaussian_blur = cv2.GaussianBlur(gray_scales,(5,5),2)
-    thresh = cv2.adaptiveThreshold(gaussian_blur,255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C,cv2.THRESH_BINARY_INV,11,2)
+    thresh = cv2.adaptiveThreshold(gaussian_blur,
+                                   maxValue=255, # giá trị pixel sau threshold  
+                                   adaptiveMethod = cv2.ADAPTIVE_THRESH_GAUSSIAN_C, # cách tính ngưỡng cục bộ
+                                   thresholdType= cv2.THRESH_BINARY_INV, # Quy tắc nhị phân hóa pixel > 0 -> đen và < threshold -> Trắng
+                                   blockSize = 11,
+                                   C = 2)
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3))
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
 
     return thresh
 
@@ -58,12 +67,13 @@ print(f"SCANING_PATH {DATA_DIR}")
 headers = ['Label','Area','Perimeter','Solidity','AspectRatio',
            'Hu1','Hu2','Hu3','Hu4','Hu5','Hu6','Hu7']
 
+
+
 with open(OUTPUT_DIR,mode='w',newline='') as f:
     writer = csv.writer(f)
     writer.writerow(headers)
     
     labels = os.listdir(DATA_DIR)
-    print(labels)
     total_images = 0
 
     for label in labels:
@@ -90,5 +100,3 @@ with open(OUTPUT_DIR,mode='w',newline='') as f:
 
 print(f"COMPLETED! EXTRACT FEATURES {total_images} images")
 print(f"Data saved: {OUTPUT_DIR}")
-
-    
