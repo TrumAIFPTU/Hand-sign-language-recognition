@@ -21,7 +21,7 @@ def train_model():
     X_train,y_train = df_train.drop('Label',axis=1), df_train['Label']
     X_test,y_test = df_test.drop('Label',axis=1), df_test['Label']
 
-    model = SVC(kernel='rbf',gamma=5,C=0.001,probability=True)
+    model = SVC(kernel='rbf',probability=True)
 
     model.fit(X_train,y_train)
 
