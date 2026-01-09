@@ -6,10 +6,10 @@ import csv
 import numpy as np
 from src.data import download_datasets
 from src.features import image_preprocessing,extract_contour
-
+from src.model.train import train_model
 def extract_training_features():
     data_dir = 'Datasets/raw/asl_alphabet_train'
-    output_dir = 'Datasets/preprocessing/data_features.csv'
+    output_dir = 'Datasets/preprocessing/train_features.csv'
 
     print(f"SCANING_PATH {data_dir}")
     headers = ['Label','Area','Perimeter','Solidity','AspectRatio',
@@ -82,11 +82,12 @@ def extract_testing_features():
     print(f"COMPLETED! EXTRACT TRAINING FEATURES {total_images} images")
     print(f"Data saved: {output_dir}")
 
+
 def main():
 
-    download_datasets()
+    download_datasets
     extract_training_features()
     extract_testing_features()
-
+    train_model()
 if __name__ == "__main__":
     main()
