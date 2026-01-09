@@ -50,6 +50,7 @@ def extract_contour(binary_img):
 
     moments = cv2.moments(c)
     hu_moments = cv2.HuMoments(moments)
+    hu_moments = hu_moments.flatten()
 
     hu_features = []
     for i in range(0,7):
