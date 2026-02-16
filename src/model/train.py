@@ -2,8 +2,10 @@ import pandas as pd
 import numpy as np
 import os
 import joblib
+import matplotlib.pyplot as plt
+import seaborn as sns
 from src.utils.paths import PREPROCESS_DIR
-from sklearn.metrics import accuracy_score,classification_report
+from sklearn.metrics import accuracy_score,classification_report,confusion_matrix
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
@@ -23,7 +25,8 @@ def train_model():
     X_train,y_train = df_train.drop('Label',axis=1), df_train['Label']
     X_test,y_test = df_test.drop('Label',axis=1), df_test['Label']
 
-    model = RandomForestClassifier(n_estimators=100,n_jobs=-1,random_state=42)
+    model = RandomForestClassifier(max_depth=18, max_features='log2', n_estimators=150,
+                       n_jobs=1, random_state=42)
 
     model.fit(X_train,y_train)
 
@@ -37,5 +40,18 @@ def train_model():
         print(f'Requirements accepted => MODEL SAVED: {MODEL_DIR}')
     else:
         print("N.G.U")
+
+    # Tính ma trận nhầm lẫn
+    cm = confusion_matrix(y_test, y_pred)
+
+    # Vẽ
+    plt.figure(figsize=(20, 16)) # Kích thước lớn vì có 28 class
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                xticklabels=sorted(list(set(y_test))),
+                yticklabels=sorted(list(set(y_test))))
+    plt.xlabel('Predicted')
+    plt.ylabel('True')
+    plt.title('Confusion Matrix')
+    plt.show()
 
 
