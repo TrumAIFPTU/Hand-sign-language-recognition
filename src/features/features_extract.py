@@ -1,87 +1,122 @@
 import cv2
 import mediapipe as mp
-import os 
-import pandas as pd
-import numpy as np
 import math
+import numpy as np
+import os
+import warnings
+from skimage.feature import hog
 
-DATA_DIR = './Datasets/raw/asl_alphabet_train'
+warnings.filterwarnings("ignore")
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 mp_hands = mp.solutions.hands
-hands = mp_hands.Hands(static_image_mode = True, max_num_hands=1, min_detection_confidence=0.5)
+# Chế độ ảnh tĩnh để trích xuất dữ liệu huấn luyện ổn định
+hands = mp_hands.Hands(static_image_mode=True, max_num_hands=1, min_detection_confidence=0.5)
 
-def calculate_distance(p1,p2):
-    return math.sqrt((p1.x-p2.x)**2 + (p1.y-p2.y)**2)
+def calculate_3d_distance(p1, p2):
+    """Tính khoảng cách Euclidean trong không gian 3D"""
+    return math.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2 + (p1[2] - p2[2])**2)
 
-def calculate_angle(p1,p2):
-    return math.atan2(p2.y-p1.y,p2.x-p1.x)
+def get_column_names():
+    
+    cols = ['Label']
+    
+    # 1. Nhóm Đặc trưng (11 cột) 
+    expert_cols = [
+        'thumb_depth', 'dist_thumb_mid', 'thumb_offset_x', 'thumb_ratio',
+        'cross_direction_x', 'ext_ring_finger', 'dist_thumb_mid_pip', 'curl_idx',
+        'mn_diff', 'finger_orientation', 'pinky_curl'
+    ]
+    cols.extend(expert_cols)
+    
+    # 2. Nhóm Landmarks thô 3D (63 cột)
+    for i in range(21):
+        cols.extend([f'x{i}', f'y{i}', f'z{i}'])
+        
+    # 3. Nhóm HOG (324 cột)
+    for i in range(324):
+        cols.append(f'hog_{i}')
+        
+    return cols
 
-def extract_landmarks(image_path):
-
-    img = cv2.imread(image_path)
-
+def extract_landmarks(image_path_or_frame):
+    """Trích xuất 398 đặc trưng từ ảnh hoặc frame camera (Không chứa Label)"""
+    if isinstance(image_path_or_frame, str):
+        img = cv2.imread(image_path_or_frame)
+    else:
+        img = image_path_or_frame
+        
     if img is None: 
-        print(f"Error in reading: {image_path}")
         return None
     
-    img_rgb = cv2.cvtColor(img,cv2.COLOR_BGR2RGB)
+    h, w, _ = img.shape
+    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     results = hands.process(img_rgb)
 
-    if results.multi_hand_landmarks is not None:
+    if results.multi_hand_landmarks:
         hand_landmarks = results.multi_hand_landmarks[0]
-
-        landmarks_list = []
-
-        # landmarks được tính tọa độ tự cổ tay bắt đầu từ điểm 0
-
-        wrist_x = hand_landmarks.landmark[0].x
-        wrist_y = hand_landmarks.landmark[0].y
-
+        
+        raw_pts = []
+        x_pixel_coords, y_pixel_coords = [], []
+        
         for lm in hand_landmarks.landmark:
+            raw_pts.append((lm.x, lm.y, lm.z))
+            x_pixel_coords.append(int(lm.x * w))
+            y_pixel_coords.append(int(lm.y * h))
 
-            landmarks_list.append(lm.x - wrist_x) # vị trí 
-            landmarks_list.append(lm.x - wrist_x) # vị trí
-            landmarks_list.append(lm.z) # độ sâu
+        # Chuẩn hóa relative: Lấy cổ tay (0) làm gốc (0,0,0)
+        base_x, base_y, base_z = raw_pts[0]
+        norm_pts = [(pt[0] - base_x, pt[1] - base_y, pt[2] - base_z) for pt in raw_pts]
         
-        row_data = landmarks_list
+        # Scale chuẩn hóa: Đưa về khoảng [-1, 1]
+        flat_coords = [c for pt in norm_pts for c in pt]
+        max_val = max(map(abs, flat_coords)) if max(map(abs, flat_coords)) != 0 else 1e-6
+        norm_pts = [(pt[0]/max_val, pt[1]/max_val, pt[2]/max_val) for pt in norm_pts]
 
-        thumb_tip = hand_landmarks.landmark[4]
-        index_mcp = hand_landmarks.landmark[5]
-        index_tip = hand_landmarks.landmark[8]
-        middle_tip = hand_landmarks.landmark[12]
-        middle_mcp = hand_landmarks.landmark[9]
-        ring_tip = hand_landmarks.landmark[16]
-        pinky_tip = hand_landmarks.landmark[20]
-
-        # Thêm khoảng cách giữa các ngón
-
-        row_data.append(calculate_distance(thumb_tip, index_tip))
-        row_data.append(calculate_distance(thumb_tip, middle_tip))
-        row_data.append(calculate_distance(thumb_tip, ring_tip))
-        row_data.append(calculate_distance(thumb_tip, pinky_tip))
-        row_data.append(calculate_distance(index_tip, middle_tip))
-
-        # Giải quyết vấn đề của nhận diện chữ U và R
-        # Ở đây do là 2 ngón trỏ và giữa của U và R chỉ khác mỗi vị trí nên khoảng cách của nó hoàn toàn là bằng nhau
-        # -> Ta sử dụng một biến để kiểm tra xem 2 vị trí của 2 ngón này có đổi cho nhau không
-        diff_index_middle_x = index_tip.x - middle_tip.x
-        row_data.append(diff_index_middle_x)
-
-        # Giải quyết vấn đề của 3 chữ cái G,P,Q 
-        # Ở đây ta có thể thấy 3 chữ cái này đều có phần ngón trỏ được chỉ ra khác mỗi góc độ và các vị trí ngón khác
-        # Nhận thấy P và Q  Ngón giữa và cái của 2 chữ cái này một gần và một xa 
-        dist_thumb_middle_mcp = calculate_distance(thumb_tip,middle_mcp)
-        row_data.append(dist_thumb_middle_mcp)
-        # G và 2 chữ còn lại khác nhau ở hướng ngón trỏ
-        index_angle = calculate_angle(index_mcp,index_tip)
-        row_data.append(index_angle)
-        # Giải quyết vấn đề của D và P và Q vì khác hướng ngón trỏ
-        diff_index_wrist_y = index_tip.y - wrist_y
-        row_data.append(diff_index_wrist_y)
-        return row_data
-    
-    else: return None
-
-
-    
+        t_depth = calculate_3d_distance(norm_pts[4], norm_pts[17])
+        d_thumb_mid = calculate_3d_distance(norm_pts[4], norm_pts[13])
+        dist_8_12 = calculate_3d_distance(norm_pts[8], norm_pts[12])
         
+
+        mn_diff = norm_pts[16][1] - norm_pts[12][1]
+        finger_orientation = norm_pts[8][1] - norm_pts[5][1]
+        pinky_curl = calculate_3d_distance(norm_pts[20], norm_pts[0])
+
+
+        expert_features = [
+            t_depth,                                            # thumb_depth
+            d_thumb_mid,                                        # dist_thumb_mid
+            norm_pts[4][0] - norm_pts[13][0],                   # thumb_offset_x
+            t_depth / (dist_8_12 + 1e-6),                       # thumb_ratio
+            norm_pts[8][0] - norm_pts[12][0],                   # cross_direction_x
+            calculate_3d_distance(norm_pts[16], norm_pts[17]),  # ext_ring_finger
+            calculate_3d_distance(norm_pts[4], norm_pts[10]),   # dist_thumb_mid_pip
+            calculate_3d_distance(norm_pts[5], norm_pts[8]),    # curl_idx
+            mn_diff,                                            # mn_diff
+            finger_orientation,                                 # finger_orientation
+            pinky_curl                                          # pinky_curl
+        ]
+
+        raw_landmarks_flat = [coord for pt in norm_pts for coord in pt]
+
+        margin = 20
+        x_min, x_max = max(0, min(x_pixel_coords) - margin), min(w, max(x_pixel_coords) + margin)
+        y_min, y_max = max(0, min(y_pixel_coords) - margin), min(h, max(y_pixel_coords) + margin)
+        
+        hand_crop = img[y_min:y_max, x_min:x_max]
+        hog_features = [0.0] * 324 
+        
+        if hand_crop.size > 0:
+            try:
+                hand_gray = cv2.cvtColor(hand_crop, cv2.COLOR_BGR2GRAY)
+                hand_resized = cv2.resize(hand_gray, (64, 64))
+                hog_features = list(hog(hand_resized, orientations=9, pixels_per_cell=(16, 16),
+                                        cells_per_block=(2, 2), block_norm='L2-Hys'))
+            except:
+                pass
+
+        # Tổng cộng: 11 + 63 + 324 = 398 features
+        final_row = expert_features + raw_landmarks_flat + hog_features
+        return final_row
+        
+    return None
