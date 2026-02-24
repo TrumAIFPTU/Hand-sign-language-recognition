@@ -58,6 +58,10 @@ def train_model():
         'ur_expert': { 
             'classes': ['U', 'R'],
             'weapons': ['cross_direction_x', 'curl_idx', 'y8', 'y12']
+        },
+        'oc_expert': {
+            'classes': ['O', 'C'],
+            'weapons': ['d_tip', 'gap_y', 'thumb_depth', 'z8', 'z4'] # Bổ sung z để SVM thấy độ sâu
         }
     }
     

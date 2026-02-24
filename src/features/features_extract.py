@@ -10,37 +10,14 @@ warnings.filterwarnings("ignore")
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 mp_hands = mp.solutions.hands
-# Chế độ ảnh tĩnh để trích xuất dữ liệu huấn luyện ổn định
 hands = mp_hands.Hands(static_image_mode=True, max_num_hands=1, min_detection_confidence=0.5)
 
 def calculate_3d_distance(p1, p2):
-    """Tính khoảng cách Euclidean trong không gian 3D"""
     return math.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2 + (p1[2] - p2[2])**2)
 
-def get_column_names():
-    
-    cols = ['Label']
-    
-    # 1. Nhóm Đặc trưng (11 cột) 
-    expert_cols = [
-        'thumb_depth', 'dist_thumb_mid', 'thumb_offset_x', 'thumb_ratio',
-        'cross_direction_x', 'ext_ring_finger', 'dist_thumb_mid_pip', 'curl_idx',
-        'mn_diff', 'finger_orientation', 'pinky_curl'
-    ]
-    cols.extend(expert_cols)
-    
-    # 2. Nhóm Landmarks thô 3D (63 cột)
-    for i in range(21):
-        cols.extend([f'x{i}', f'y{i}', f'z{i}'])
-        
-    # 3. Nhóm HOG (324 cột)
-    for i in range(324):
-        cols.append(f'hog_{i}')
-        
-    return cols
 
 def extract_landmarks(image_path_or_frame):
-    """Trích xuất 398 đặc trưng từ ảnh hoặc frame camera (Không chứa Label)"""
+    """Trích xuất 400 đặc trưng từ ảnh hoặc frame camera (Không chứa Label)"""
     if isinstance(image_path_or_frame, str):
         img = cv2.imread(image_path_or_frame)
     else:
@@ -64,11 +41,9 @@ def extract_landmarks(image_path_or_frame):
             x_pixel_coords.append(int(lm.x * w))
             y_pixel_coords.append(int(lm.y * h))
 
-        # Chuẩn hóa relative: Lấy cổ tay (0) làm gốc (0,0,0)
         base_x, base_y, base_z = raw_pts[0]
         norm_pts = [(pt[0] - base_x, pt[1] - base_y, pt[2] - base_z) for pt in raw_pts]
         
-        # Scale chuẩn hóa: Đưa về khoảng [-1, 1]
         flat_coords = [c for pt in norm_pts for c in pt]
         max_val = max(map(abs, flat_coords)) if max(map(abs, flat_coords)) != 0 else 1e-6
         norm_pts = [(pt[0]/max_val, pt[1]/max_val, pt[2]/max_val) for pt in norm_pts]
@@ -77,12 +52,15 @@ def extract_landmarks(image_path_or_frame):
         d_thumb_mid = calculate_3d_distance(norm_pts[4], norm_pts[13])
         dist_8_12 = calculate_3d_distance(norm_pts[8], norm_pts[12])
         
-
         mn_diff = norm_pts[16][1] - norm_pts[12][1]
         finger_orientation = norm_pts[8][1] - norm_pts[5][1]
         pinky_curl = calculate_3d_distance(norm_pts[20], norm_pts[0])
 
+        # --- VỊ TRÍ 2: Tính toán 2 đặc trưng cho O/C ---
+        d_tip = calculate_3d_distance(norm_pts[8], norm_pts[4])
+        gap_y = norm_pts[4][1] - norm_pts[8][1]
 
+        # --- VỊ TRÍ 3: Thêm vào danh sách expert_features ---
         expert_features = [
             t_depth,                                            # thumb_depth
             d_thumb_mid,                                        # dist_thumb_mid
@@ -94,7 +72,9 @@ def extract_landmarks(image_path_or_frame):
             calculate_3d_distance(norm_pts[5], norm_pts[8]),    # curl_idx
             mn_diff,                                            # mn_diff
             finger_orientation,                                 # finger_orientation
-            pinky_curl                                          # pinky_curl
+            pinky_curl,                                         # pinky_curl
+            d_tip,                                              # d_tip (Mới)
+            gap_y                                               # gap_y (Mới)
         ]
 
         raw_landmarks_flat = [coord for pt in norm_pts for coord in pt]
@@ -115,7 +95,7 @@ def extract_landmarks(image_path_or_frame):
             except:
                 pass
 
-        # Tổng cộng: 11 + 63 + 324 = 398 features
+        # Tổng cộng: 13 + 63 + 324 = 400 features (Không tính Label)
         final_row = expert_features + raw_landmarks_flat + hog_features
         return final_row
         

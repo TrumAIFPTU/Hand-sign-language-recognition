@@ -19,19 +19,17 @@ from src.model.train import train_model
 def get_column_names():
     cols = ['Label']
     
-    # 11 cột Expert
     expert_cols = [
         'thumb_depth', 'dist_thumb_mid', 'thumb_offset_x', 'thumb_ratio',
         'cross_direction_x', 'ext_ring_finger', 'dist_thumb_mid_pip', 'curl_idx',
-        'mn_diff', 'finger_orientation', 'pinky_curl'
+        'mn_diff', 'finger_orientation', 'pinky_curl',
+        'd_tip', 'gap_y'  
     ]
     cols.extend(expert_cols)
     
-    # 63 cột Landmarks
     for i in range(21):
         cols.extend([f'x{i}', f'y{i}', f'z{i}'])
         
-    # 324 cột HOG
     for i in range(324):
         cols.append(f'hog_{i}')
         
