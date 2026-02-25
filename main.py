@@ -271,11 +271,30 @@ def implement_model():
     plt.title('Confusion Matrix - Mixture of Experts (MoE) Final System')
     plt.show()
 def main():
-    download_datasets()
-    extract_training_features()
-    extract_testing_features()
-    train_model()
-    implement_model()
+    # ============================================================
+    # CÀI ĐẶT NHANH: Đặt True/False để bật/tắt từng bước
+    # ============================================================
+    SKIP_DOWNLOAD = False   # True = Bỏ qua bước tải Data từ Kaggle
+    SKIP_EXTRACT  = False   # True = Bỏ qua bước trích xuất features (dùng lại CSV cũ)
+    SKIP_TRAIN    = False   # True = Bỏ qua bước Train (dùng lại Model cũ)
+    # ============================================================
+
+    if not SKIP_DOWNLOAD:
+        download_datasets()
+    else:
+        print("[BỎ QUA] Bước tải Data (SKIP_DOWNLOAD = True)")
+    
+    if not SKIP_EXTRACT:
+        extract_training_features()
+        extract_testing_features()
+    else:
+        print("[BỎ QUA] Bước trích xuất Features (SKIP_EXTRACT = True)")
+    
+    if not SKIP_TRAIN:
+        train_model()
+        implement_model()
+    else:
+        print("[BỎ QUA] Bước Train Model (SKIP_TRAIN = True)")
 
 if __name__ == "__main__":
     main()
