@@ -222,7 +222,15 @@ def implement_model():
         return
 
     df_test = pd.read_csv(test_csv).dropna(subset=['Label'])
+    
+    # GUARD: Nếu test CSV rỗng thì bỏ qua
+    if len(df_test) == 0:
+        print("[CẢNH BÁO] Test CSV rỗng. Bỏ qua implement_model.")
+        return
+    
     X_test = df_test.drop('Label', axis=1)
+    # BẮT BUỘC: Ép kiểu toàn bộ X về float32 (tránh lỗi 'object' dtype)
+    X_test = X_test.apply(pd.to_numeric, errors='coerce').fillna(0).astype('float32')
     y_test_raw = df_test['Label'].astype(str)
     y_test_encoded = le.transform(y_test_raw)
     
