@@ -48,21 +48,21 @@ def train_model():
     y_test_encoded = le.transform(y_test_raw)
 
     print("--- Đang huấn luyện Tầng 1: XGBoost ---")
+    n_est = 700
     try:
-        n_est = 700
         model_general = xgb.XGBClassifier(
             max_depth=8,              
             learning_rate=0.03,       
             n_estimators=n_est,         
             tree_method='hist',
             device='cuda', 
-            random_state=42
+            random_state=42,
+            callbacks=[TqdmCallback(n_est)]
         )
-        model_general.fit(X_train, y_train_encoded, callbacks=[TqdmCallback(n_est)])
+        model_general.fit(X_train, y_train_encoded)
         print("[THÀNH CÔNG] XGBoost đã dùng GPU (CUDA) để huấn luyện siêu tốc!")
     except Exception as e:
-        print(f"[CẢNH BÁO] GPU không khả dụng: {e}. Chuyển sang CPU...")
-        n_est = 700
+        print(f"[CẢNH BÁO] Lỗi: {e}. Chuyển sang CPU không callback...")
         model_general = xgb.XGBClassifier(
             max_depth=8,              
             learning_rate=0.03,       
@@ -72,7 +72,7 @@ def train_model():
             n_jobs=-1,
             random_state=42
         )
-        model_general.fit(X_train, y_train_encoded, callbacks=[TqdmCallback(n_est)])
+        model_general.fit(X_train, y_train_encoded)
 
 
     expert_configs = {
