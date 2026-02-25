@@ -49,26 +49,40 @@ def train_model():
 
     print("--- Đang huấn luyện Tầng 1: XGBoost ---")
     n_est = 700
+    gpu_used = False
     
-    # Bước 1: Thử GPU CUDA trước (ưu tiên tốc độ)
-    try:
-        model_general = xgb.XGBClassifier(
-            max_depth=8, learning_rate=0.03, n_estimators=n_est,
-            tree_method='hist', device='cuda', random_state=42
-        )
-        # Thử gắn callback tqdm nếu phiên bản xgboost hỗ trợ
+    # Thử 1: API mới (xgboost >= 2.0): device='cuda'
+    if not gpu_used:
         try:
-            model_general.set_params(callbacks=[TqdmCallback(n_est)])
+            model_general = xgb.XGBClassifier(
+                max_depth=8, learning_rate=0.03, n_estimators=n_est,
+                tree_method='hist', device='cuda', random_state=42
+            )
+            model_general.fit(X_train, y_train_encoded)
+            gpu_used = True
+            print("[THÀNH CÔNG] XGBoost GPU (API mới: device='cuda')!")
         except:
-            print("[INFO] Phiên bản XGBoost cũ, bỏ qua thanh tiến độ.")
-        model_general.fit(X_train, y_train_encoded)
-        print("[THÀNH CÔNG] XGBoost đã dùng GPU (CUDA)!")
-    except Exception as e:
-        # Bước 2: Fallback CPU nếu không có GPU
-        print(f"[CẢNH BÁO] GPU lỗi: {e}. Chuyển sang CPU...")
+            pass
+    
+    # Thử 2: API cũ (xgboost < 2.0): tree_method='gpu_hist'
+    if not gpu_used:
+        try:
+            model_general = xgb.XGBClassifier(
+                max_depth=8, learning_rate=0.03, n_estimators=n_est,
+                tree_method='gpu_hist', random_state=42
+            )
+            model_general.fit(X_train, y_train_encoded)
+            gpu_used = True
+            print("[THÀNH CÔNG] XGBoost GPU (API cũ: gpu_hist)!")
+        except:
+            pass
+    
+    # Thử 3: CPU fallback
+    if not gpu_used:
+        print("[CẢNH BÁO] Không tìm thấy GPU. Chạy bằng CPU...")
         model_general = xgb.XGBClassifier(
             max_depth=8, learning_rate=0.03, n_estimators=n_est,
-            tree_method='hist', device='cpu', n_jobs=-1, random_state=42
+            tree_method='hist', n_jobs=-1, random_state=42
         )
         model_general.fit(X_train, y_train_encoded)
 
