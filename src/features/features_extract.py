@@ -42,11 +42,28 @@ def extract_landmarks(image_path_or_frame):
             y_pixel_coords.append(int(lm.y * h))
 
         base_x, base_y, base_z = raw_pts[0]
-        norm_pts = [(pt[0] - base_x, pt[1] - base_y, pt[2] - base_z) for pt in raw_pts]
+        translated_pts = [(pt[0] - base_x, pt[1] - base_y, pt[2] - base_z) for pt in raw_pts]
         
-        flat_coords = [c for pt in norm_pts for c in pt]
+        # --- CHUẨN HOÁ GÓC XOAY (ROTATION NORMALIZATION) ---
+        # Lấy vector hướng từ Cổ tay (0) đến Khớp ngón giữa (9)
+        x9, y9, _ = translated_pts[9]
+        # Tính góc xiên hiện tại của bàn tay so với phương ngang
+        current_angle = np.arctan2(y9, x9)
+        # Góc mục tiêu: -pi/2 (Tức là ngón giữa dựng thẳng đứng lên trời trên trục Y)
+        target_angle = -np.pi / 2
+        theta = target_angle - current_angle
+        
+        # Áp dụng Ma trận xoay (Rotation Matrix) xoay toàn bộ 21 điểm
+        rotated_pts = []
+        for pt in translated_pts:
+            x_new = pt[0] * np.cos(theta) - pt[1] * np.sin(theta)
+            y_new = pt[0] * np.sin(theta) + pt[1] * np.cos(theta)
+            rotated_pts.append((x_new, y_new, pt[2]))
+        
+        # --- CHUẨN HOÁ TỶ LỆ (SCALE NORMALIZATION) ---
+        flat_coords = [c for pt in rotated_pts for c in pt]
         max_val = max(map(abs, flat_coords)) if max(map(abs, flat_coords)) != 0 else 1e-6
-        norm_pts = [(pt[0]/max_val, pt[1]/max_val, pt[2]/max_val) for pt in norm_pts]
+        norm_pts = [(pt[0]/max_val, pt[1]/max_val, pt[2]/max_val) for pt in rotated_pts]
 
         t_depth = calculate_3d_distance(norm_pts[4], norm_pts[17])
         d_thumb_mid = calculate_3d_distance(norm_pts[4], norm_pts[13])
