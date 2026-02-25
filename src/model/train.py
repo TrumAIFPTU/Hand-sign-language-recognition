@@ -2,12 +2,24 @@ import pandas as pd
 import numpy as np
 import os
 import joblib
+from tqdm import tqdm
 from src.utils.paths import PREPROCESS_DIR
 from sklearn.metrics import accuracy_score, classification_report
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.svm import SVC
 from sklearn.pipeline import make_pipeline
 import xgboost as xgb
+
+# Callback tqdm cho XGBoost
+class TqdmCallback(xgb.callback.TrainingCallback):
+    def __init__(self, total):
+        self.pbar = tqdm(total=total, desc="XGBoost (Trees)", unit="tree", ncols=80)
+    def after_iteration(self, model, epoch, evals_log):
+        self.pbar.update(1)
+        return False
+    def after_training(self, model):
+        self.pbar.close()
+        return model
 
 MODEL_DIR = 'model_saved/moe_hybrid_clf.pkl'
 
@@ -37,28 +49,30 @@ def train_model():
 
     print("--- Đang huấn luyện Tầng 1: XGBoost ---")
     try:
+        n_est = 700
         model_general = xgb.XGBClassifier(
             max_depth=8,              
             learning_rate=0.03,       
-            n_estimators=700,         
+            n_estimators=n_est,         
             tree_method='hist',
             device='cuda', 
             random_state=42
         )
-        model_general.fit(X_train, y_train_encoded)
-        print("[THÀNH CÔNG] XGBoost đang sử dụng GPU (CUDA) để huấn luyện siêu tốc!")
+        model_general.fit(X_train, y_train_encoded, callbacks=[TqdmCallback(n_est)])
+        print("[THÀNH CÔNG] XGBoost đã dùng GPU (CUDA) để huấn luyện siêu tốc!")
     except Exception as e:
-        print(f"[CẢNH BÁO] GPU không khả dụng. Tự động chuyển XGBoost sang đa nhân CPU (n_jobs=-1)...")
+        print(f"[CẢNH BÁO] GPU không khả dụng: {e}. Chuyển sang CPU...")
+        n_est = 700
         model_general = xgb.XGBClassifier(
             max_depth=8,              
             learning_rate=0.03,       
-            n_estimators=700,         
+            n_estimators=n_est,         
             tree_method='hist',
             device='cpu',
             n_jobs=-1,
             random_state=42
         )
-        model_general.fit(X_train, y_train_encoded)
+        model_general.fit(X_train, y_train_encoded, callbacks=[TqdmCallback(n_est)])
 
 
     expert_configs = {
@@ -85,13 +99,13 @@ def train_model():
     }
     
     trained_experts = {}
-    for name, config in expert_configs.items():
-        print(f"--- Đang huấn luyện SVM cho cụm: {config['classes']} ---")
+    for name, config in tqdm(expert_configs.items(), desc="SVM Experts", unit="cluster", ncols=80):
+        print(f"\n  => Huấn luyện SVM cụm: {config['classes']}")
         df_sub = df_train[df_train['Label'].isin(config['classes'])]
         
         # BẢO VỆ CHỐNG TRÀN ZERO-LENGHT ARRAY KHI THIẾU DATA
         if len(df_sub) < 5:
-            print(f"[CẢNH BÁO] Cụm {config['classes']} KHÔNG ĐỦ DỮ LIỆU ({len(df_sub)} ảnh). Đã bỏ qua SVM này để tránh Crash.")
+            print(f"[CẢNH BÁO] Cụm {config['classes']} KHÔNG ĐỦ DỮ LIỆU ({len(df_sub)} ảnh). Đã bỏ qua.")
             continue
             
         kernel_type = 'rbf' 
@@ -104,30 +118,34 @@ def train_model():
         trained_experts[name] = clf
 
     print("--- Đang đánh giá hệ thống Hybrid ---")
-    y_pred_xgb = model_general.predict(X_test)
-    y_pred_final = y_pred_xgb.copy()
     
-    class_to_expert = {}
-    for name, config in expert_configs.items():
-        for cls in config['classes']:
-            cls_idx = le.transform([cls])[0]
-            class_to_expert[cls_idx] = name
+    # GUARD: Bỏ qua Evaluation nếu Test Set rỗng (VD: chạy trên VM không có ảnh Test)
+    if len(X_test) == 0 or len(y_test_encoded) == 0:
+        print("[CẢNH BÁO] Không tìm thấy dữ liệu Test. Bỏ qua Evaluation, vẫn lưu Model.")
+    else:
+        y_pred_xgb = model_general.predict(X_test)
+        y_pred_final = y_pred_xgb.copy()
+        
+        class_to_expert = {}
+        for name, config in expert_configs.items():
+            for cls in config['classes']:
+                cls_idx = le.transform([cls])[0]
+                class_to_expert[cls_idx] = name
 
-    for i in range(len(y_pred_xgb)):
-        xgb_res = y_pred_xgb[i]
-        if xgb_res in class_to_expert:
-            expert_name = class_to_expert[xgb_res]
-            weapons = expert_configs[expert_name]['weapons']
-            row_input = X_test.iloc[[i]][weapons]
-            
-            final_label = trained_experts[expert_name].predict(row_input)[0]
-            y_pred_final[i] = le.transform([final_label])[0]
+        for i in range(len(y_pred_xgb)):
+            xgb_res = y_pred_xgb[i]
+            if xgb_res in class_to_expert:
+                expert_name = class_to_expert[xgb_res]
+                weapons = expert_configs[expert_name]['weapons']
+                row_input = X_test.iloc[[i]][weapons]
+                
+                final_label = trained_experts[expert_name].predict(row_input)[0]
+                y_pred_final[i] = le.transform([final_label])[0]
 
-
-    acc = accuracy_score(y_test_encoded, y_pred_final)
-    print(f"\n[FINAL HYBRID ACCURACY]: {acc:.4f}")
-    
-    print(classification_report(
+        acc = accuracy_score(y_test_encoded, y_pred_final)
+        print(f"\n[FINAL HYBRID ACCURACY]: {acc:.4f}")
+        
+        print(classification_report(
         y_test_encoded, y_pred_final, 
         labels=range(len(le.classes_)), target_names=le.classes_, zero_division=0
     ))
