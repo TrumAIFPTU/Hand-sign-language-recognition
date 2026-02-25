@@ -1,7 +1,6 @@
 /venv/
 requirements.txt
 __pycache__/
-model_saved/
 /Image/
 .vscode/
 antigravity-awesome-skills/
