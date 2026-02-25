@@ -150,6 +150,9 @@ def train_model():
         labels=range(len(le.classes_)), target_names=le.classes_, zero_division=0
     ))
 
+    # XOÁ CALLBACK TQDM TRƯỚC KHI LƯU (Tránh lỗi pickle TextIOWrapper)
+    model_general.set_params(callbacks=None)
+    
     artifacts = {
         'model_general': model_general,
         'experts': trained_experts,
