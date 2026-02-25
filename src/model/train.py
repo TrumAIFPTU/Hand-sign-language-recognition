@@ -49,28 +49,26 @@ def train_model():
 
     print("--- Đang huấn luyện Tầng 1: XGBoost ---")
     n_est = 700
+    
+    # Bước 1: Thử GPU CUDA trước (ưu tiên tốc độ)
     try:
         model_general = xgb.XGBClassifier(
-            max_depth=8,              
-            learning_rate=0.03,       
-            n_estimators=n_est,         
-            tree_method='hist',
-            device='cuda', 
-            random_state=42,
-            callbacks=[TqdmCallback(n_est)]
+            max_depth=8, learning_rate=0.03, n_estimators=n_est,
+            tree_method='hist', device='cuda', random_state=42
         )
+        # Thử gắn callback tqdm nếu phiên bản xgboost hỗ trợ
+        try:
+            model_general.set_params(callbacks=[TqdmCallback(n_est)])
+        except:
+            print("[INFO] Phiên bản XGBoost cũ, bỏ qua thanh tiến độ.")
         model_general.fit(X_train, y_train_encoded)
-        print("[THÀNH CÔNG] XGBoost đã dùng GPU (CUDA) để huấn luyện siêu tốc!")
+        print("[THÀNH CÔNG] XGBoost đã dùng GPU (CUDA)!")
     except Exception as e:
-        print(f"[CẢNH BÁO] Lỗi: {e}. Chuyển sang CPU không callback...")
+        # Bước 2: Fallback CPU nếu không có GPU
+        print(f"[CẢNH BÁO] GPU lỗi: {e}. Chuyển sang CPU...")
         model_general = xgb.XGBClassifier(
-            max_depth=8,              
-            learning_rate=0.03,       
-            n_estimators=n_est,         
-            tree_method='hist',
-            device='cpu',
-            n_jobs=-1,
-            random_state=42
+            max_depth=8, learning_rate=0.03, n_estimators=n_est,
+            tree_method='hist', device='cpu', n_jobs=-1, random_state=42
         )
         model_general.fit(X_train, y_train_encoded)
 
