@@ -15,6 +15,8 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 from src.data import download_datasets
 from src.features import extract_landmarks
 from src.model.train import train_model
+import random # Thêm thư viện random cho Augmentation
+from joblib import Parallel, delayed # Thêm xử lý đa luồng
 
 def get_column_names():
     cols = ['Label']
@@ -34,45 +36,126 @@ def get_column_names():
         cols.append(f'hog_{i}')
         
     return cols
+def augment_image(image):
+    """
+    Thực hiện Data Augmentation (Tăng cường dữ liệu) đơn giản bằng OpenCV.
+    Trả về danh sách các ảnh đã được biến đổi (Bao gồm ảnh gốc).
+    """
+    aug_images = [image]
+    
+    # 1. Lật ảnh ngang (Flip Horizontal) - Biến tay phải thành tay trái
+    # LƯU Ý: Rất cẩn thận với tập Sign Language! Một số chữ lật ngang sẽ mất ý nghĩa.
+    # Trong ASL, đa số chữ cái dùng 1 tay thì lật ngang vẫn xài được (như J thì lật sẽ thành ngược).
+    # Ta chỉ thêm độ sáng, độ tương phản để giữ cấu trúc chữ nguyên vẹn nhất!
+    
+    # 2. Thay đổi độ sáng ngẫu nhiên (Brightness)
+    value = random.randint(-40, 40)
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    h, s, v = cv2.split(hsv)
+    v = cv2.add(v, value)
+    v[v > 255] = 255
+    v[v < 0] = 0
+    final_hsv = cv2.merge((h, s, v))
+    img_brightness = cv2.cvtColor(final_hsv, cv2.COLOR_HSV2BGR)
+    aug_images.append(img_brightness)
+    
+    # 3. Phóng to nhẹ (Zoom In - Scale) để mô phỏng đưa tay lại gần
+    height, width = image.shape[:2]
+    scale = random.uniform(1.05, 1.2)
+    center_x, center_y = width / 2, height / 2
+    M = cv2.getRotationMatrix2D((center_x, center_y), 0, scale)
+    img_zoomed = cv2.warpAffine(image, M, (width, height))
+    aug_images.append(img_zoomed)
+    
+    return aug_images
+
+def process_single_image(image_path, label):
+    """
+    Hàm xử lý cho 1 ảnh đơn lẻ để chạy đa luồng.
+    Đọc ảnh, Augment, và Trích xuất Đặc trưng.
+    Trả về list các rows (dòng data) hợp lệ.
+    """
+    rows = []
+    img = cv2.imread(image_path)
+    if img is None: return rows
+    
+    augmented_imgs = augment_image(img)
+    for aug_img in augmented_imgs:
+        features = extract_landmarks(aug_img)
+        if features is not None:
+            rows.append([label] + features)
+    return rows
+
 def extract_training_features():
     data_dir = 'Datasets/raw/asl_alphabet_train'
+    
+    # KAGGE FIX: Kaggle giải nén thư mục bị lồng vào trong (Ví dụ: asl_alphabet_train/asl_alphabet_train/A)
+    # Ta phải chui vào thêm 1 lớp nếu thư mục đó xuất hiện
+    if os.path.exists(os.path.join(data_dir, 'asl_alphabet_train')):
+        data_dir = os.path.join(data_dir, 'asl_alphabet_train')
+        
     output_dir = 'Datasets/preprocessing/train_features.csv'
+    
+    # CASH MEMORY: Khỏi chạy lại nửa tiếng nếu đã có sẵn
+    if os.path.exists(output_dir):
+        print(f"👉 [BỎ QUA] Đã tìm thấy tệp {output_dir}. Nhảy qua bước Trích xuất Features Train!")
+        return
+        
     os.makedirs(os.path.dirname(output_dir), exist_ok=True)
     cols = get_column_names()
 
+    # Thu thập toàn bộ đường dẫn ảnh và nhãn
+    image_tasks = []
+    if os.path.exists(data_dir):
+        labels = os.listdir(data_dir)
+        for label in labels:
+            label_path = os.path.join(data_dir, label)
+            if not os.path.isdir(label_path): continue
+            
+            for image_name in os.listdir(label_path):
+                image_tasks.append((os.path.join(label_path, image_name), label))
+                
+    if not image_tasks:
+        print("[THÔNG BÁO] Không tìm thấy dữ liệu Train. Bỏ qua bước Extract.")
+        return
+
+    print(f"Đang chuẩn bị trích xuất {len(image_tasks)} file ảnh gốc (Sẽ x3 nhờ Augmentation)...")
+    
+    # CẤU HÌNH TỐI ƯU CHO Intel i5-14600KF (20 threads)
+    # Dùng 12 luồng để cân bằng tốc độ siêu nhanh và tính ổn định của Windows OS
+    results = Parallel(n_jobs=12, batch_size=10)(
+        delayed(process_single_image)(img_path, lbl) 
+        for img_path, lbl in tqdm(image_tasks, desc="Extracting (Multi-core)")
+    )
+    
+    # Gộp kết quả và Ghi ra file CSV
+    total_images = 0
     with open(output_dir, mode='w', newline='') as f:
         writer = csv.writer(f)
         writer.writerow(cols)
         
-        labels = os.listdir(data_dir)
-        total_images = 0
+        for row_list in results:
+            for row in row_list:
+                writer.writerow(row)
+                total_images += 1
 
-        for label in labels:
-            label_path = os.path.join(data_dir, label)
-            if not os.path.isdir(label_path): 
-                continue
-            
-            cnt = 0
-            for image_name in tqdm(os.listdir(label_path), desc=f'Extracting {label}'):
-                image_path = os.path.join(label_path, image_name)
-                features = extract_landmarks(image_path)
-
-                if features is not None:
-                    row = [label] + features
-                    writer.writerow(row)
-                    total_images += 1
-                    cnt += 1
-                    
-            print(f"EXTRACT: {cnt} {label} images")
-            print("------------------------------------------------")
-
-    print(f"COMPLETED! EXTRACT TRAINING FEATURES {total_images} images")
+    print(f"COMPLETED! EXTRACT TRAINING FEATURES {total_images} rows")
     print(f"Data saved: {output_dir}")
     
 def extract_testing_features():
     test_dir = 'Datasets/raw/test_datasets/new_test'
     test_dir2 = 'Datasets/raw/asl_alphabet_test'
+    
+    # Tương tự như tập Train, nếu Kaggle giải nén bị lồng 2 thư mục
+    if os.path.exists(os.path.join(test_dir2, 'asl_alphabet_test')):
+        test_dir2 = os.path.join(test_dir2, 'asl_alphabet_test')
+        
     output_dir = 'Datasets/preprocessing/test_features.csv'
+    
+    # CASH MEMORY 
+    if os.path.exists(output_dir):
+        print(f"👉 [BỎ QUA] Đã tìm thấy tệp {output_dir}. Nhảy qua bước Trích xuất Features Test!")
+        return
 
     os.makedirs(os.path.dirname(output_dir), exist_ok=True)
     cols = get_column_names()
@@ -188,7 +271,7 @@ def implement_model():
     plt.title('Confusion Matrix - Mixture of Experts (MoE) Final System')
     plt.show()
 def main():
-    # download_datasets()
+    download_datasets()
     extract_training_features()
     extract_testing_features()
     train_model()

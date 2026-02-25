@@ -1,45 +1,38 @@
 import cv2
 import numpy as np
 import mediapipe as mp
-import time
 import os
 import joblib
-import pandas as pd
-from collections import deque
-import threading
-import pyttsx3
 import warnings
-warnings.filterwarnings("ignore")
+import pyttsx3
+import threading
 
+warnings.filterwarnings("ignore")
 from src.features.features_extract import extract_landmarks
 
 # --------------------------
-# Trình Đọc TTS (Text to Speech)
+# Cấu Hình TTS (Đọc văn bản)
 # --------------------------
+# Khởi tạo engine TTS trên luồng riêng để không đứng hình camera
 engine = pyttsx3.init()
-engine.setProperty('rate', 150)
-
 def speak_text(text):
-    if text.strip() == "": return
-    def _speak():
+    def run_speech():
         engine.say(text)
         engine.runAndWait()
-    threading.Thread(target=_speak, daemon=True).start()
+    threading.Thread(target=run_speech, daemon=True).start()
 
 # --------------------------
-# Cấu Hình MediaPipe
+# Cấu Hình MediaPipe (Chế độ Ảnh Tĩnh)
 # --------------------------
-mp_selfie_segmentation = mp.solutions.selfie_segmentation
-segmentation = mp_selfie_segmentation.SelfieSegmentation(model_selection=1)
-
 mp_drawing = mp.solutions.drawing_utils
 mp_drawing_styles = mp.solutions.drawing_styles
 mp_hands = mp.solutions.hands
+
+# static_image_mode=True: Đoán chính xác 1 frame hình tĩnh độc lập
 hands_detector = mp_hands.Hands(
-    static_image_mode=False,
+    static_image_mode=True, 
     max_num_hands=1,
-    min_detection_confidence=0.5,
-    min_tracking_confidence=0.5
+    min_detection_confidence=0.5
 )
 
 # --------------------------
@@ -47,46 +40,18 @@ hands_detector = mp_hands.Hands(
 # --------------------------
 MODEL_DIR = 'model_saved/moe_hybrid_clf.pkl'
 if not os.path.exists(MODEL_DIR):
-    print(f"[LỖI] Không tìm thấy mô hình tại {MODEL_DIR}")
+    print(f"[LỖI] Không tìm thấy file mô hình tại {MODEL_DIR}")
+    print("Vui lòng chạy 'python main.py' để huấn luyện mô hình trước!")
     exit(1)
 
-print("[THÔNG BÁO] Đang tải mô hình...")
 artifacts = joblib.load(MODEL_DIR)
 model_general = artifacts['model_general']
 experts = artifacts['experts']
 expert_configs = artifacts['expert_configs']
 le = artifacts['label_encoder']
 
-# Lấy danh sách feature chuẩn mà XGBoost được huấn luyện
-train_feature_names = getattr(model_general, 'feature_names_in_', None)
-
-# --------------------------
-# Hàm Xử Lý Ảnh Môi Trường
-# --------------------------
-def auto_brightness_contrast(img):
-    """ Tự động cân bằng sáng nếu môi trường quá tối hoặc sáng """
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    mean_val = np.mean(gray)
-    if mean_val < 50:  # Quá tối
-        alpha, beta = 1.5, 30
-    elif mean_val > 200: # Quá sáng
-        alpha, beta = 0.8, -30
-    else:
-        return img
-    return cv2.convertScaleAbs(img, alpha=alpha, beta=beta)
-
-def blur_background(img):
-    """ Làm mờ nền để tập trung vào tay và người """
-    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    results = segmentation.process(img_rgb)
-    
-    condition = np.stack((results.segmentation_mask,) * 3, axis=-1) > 0.1
-    bg_image = cv2.GaussianBlur(img, (55, 55), 0)
-    # Lấy background hơi tối một chút để tay nổi bật
-    bg_image = cv2.convertScaleAbs(bg_image, alpha=0.7, beta=0) 
-    
-    output_image = np.where(condition, img, bg_image)
-    return output_image
+# Features order từ lúc training
+train_feature_names = artifacts.get('feature_names', None)
 
 # --------------------------
 # Vòng Lặp Chính
@@ -96,157 +61,137 @@ def main():
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
     
-    # -- Biến Trạng Thái Từ Vựng & Câu --
-    prediction_buffer = deque(maxlen=15) # Bộ đệm lưu 15 frame liên tiếp để tránh nháy
-    current_sentence = ""
-    last_word = ""
+    last_prediction = ""
+    sentence = ""
+    is_processing = False
     
-    # -- Biến Hệ Thống & Sleep Mode --
-    last_hand_time = time.time()
-    sleep_mode = False
-    
-    print("[THÔNG BÁO] Hệ thống đã sẵn sàng!")
+    print("[THÔNG BÁO] App Point & Shoot đã mở.")
     
     while True:
         ret, frame = cap.read()
         if not ret: break
-        frame = cv2.flip(frame, 1) # Lật gương
-        current_time = time.time()
         
-        # --- PHASE: KIỂM TRA SLEEP MODE ---
-        if current_time - last_hand_time > 30:
-            sleep_mode = True
-        else:
-            sleep_mode = False
-            
-        if sleep_mode:
-            # Chạy nhàn rỗi (Low FPS)
-            cv2.putText(frame, "SLEEP MODE", (400, 300), cv2.FONT_HERSHEY_SIMPLEX, 3, (0, 0, 255), 5)
-            cv2.putText(frame, "Raise your hand to wake up", (350, 400), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-            cv2.imshow("Hand Sign AI AI", frame)
-            
-            # Thỉnh thoảng mới dùng tay thăm dò để đỡ tốn CPU
-            results = hands_detector.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            if results.multi_hand_landmarks:
-                last_hand_time = current_time 
-                
-            time.sleep(0.5) 
-            if cv2.waitKey(1) & 0xFF == ord('q'): break
-            continue
-
-        # --- PHASE: TIỀN XỬ LÝ & NHẬN DIỆN ---
-        frame = auto_brightness_contrast(frame)
-        display_frame = blur_background(frame)
-        
+        frame = cv2.flip(frame, 1) # Lật gương cho tự nhiên
+        display_frame = frame.copy()
         h, w, c = frame.shape
         
-        # Vẽ Ghost Frame (Khung người dùng định hướng tay)
-        cv2.rectangle(display_frame, (w//2 - 200, h//2 - 250), (w//2 + 200, h//2 + 150), (100, 255, 100), 2)
-        cv2.putText(display_frame, "Place hand here", (w//2 - 90, h//2 - 260), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (100, 255, 100), 1)
+        # --- PHASE: VẼ UI VÀ HƯỚNG DẪN BÊN TRÁI MÀN HÌNH ---
+        # Panel mờ bên trái
+        overlay = display_frame.copy()
+        cv2.rectangle(overlay, (0, 0), (380, 250), (0, 0, 0), cv2.FILLED)
+        cv2.addWeighted(overlay, 0.6, display_frame, 0.4, 0, display_frame)
+        
+        # Text Hướng dẫn
+        instructions = [
+            "Press 's' to Scan/Capture",
+            "Press 'Enter' to Speak text",
+            "Press 'Backspace' to Delete",
+            "Press 'Space' to Add Space",
+            "Press 'c' to Clear All",
+            "Press 'q' to Quit"
+        ]
+        y_offset = 40
+        for text in instructions:
+            if "'s'" in text:
+                color = (0, 255, 0) # Xanh lá
+            elif "'q'" in text:
+                color = (0, 0, 255) # Đỏ
+            else:
+                color = (255, 255, 255) # Trắng
+            cv2.putText(display_frame, text, (20, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+            y_offset += 35
 
-        # Xử lý MediaPipe lấy landmark
-        img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = hands_detector.process(img_rgb)
+        # Khung Camera cho người dùng căn tay
+        box_w, box_h = 350, 400
+        x_center, y_center = w // 2 + 100, h // 2
+        top_left = (x_center - box_w//2, y_center - box_h//2)
+        bottom_right = (x_center + box_w//2, y_center + box_h//2)
         
-        predicted_char = ""
+        cv2.rectangle(display_frame, top_left, bottom_right, (100, 255, 100), 2)
+        cv2.putText(display_frame, "Place hand here & Press 's' to Scan", 
+                    (top_left[0], top_left[1]-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (100, 255, 100), 2)
         
-        if results.multi_hand_landmarks:
-            last_hand_time = current_time # Đánh thức / Giữ thức
+        # --- PHASE: HIỂN THỊ CÂU (SENTENCE) VÀ KẾT QUẢ ĐANG TÍNH ---
+        cv2.rectangle(display_frame, (0, h-120), (w, h), (30, 30, 30), cv2.FILLED)
+        
+        if is_processing:
+            cv2.putText(display_frame, "DANG QUET...", (w//2, h//2), 
+                        cv2.FONT_HERSHEY_DUPLEX, 2.0, (0, 0, 255), 4)
+                        
+        # Hiển thị Sentence
+        cv2.putText(display_frame, "Sentence: ", (20, h-40), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 2.0, (0, 255, 255), 4)
+        cv2.putText(display_frame, sentence, (320, h-40), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 2.0, (255, 255, 255), 4)
+        
+        cv2.imshow("Hand Sign AI - Point & Shoot", display_frame)
+        
+        key = cv2.waitKey(1) & 0xFF
+        
+        # --- BỘ ĐIỀU KHIỂN BÀN PHÍM ---
+        if key == ord('q'):
+            break
+        elif key == ord('c'):
+            sentence = ""
+        elif key == 32: # Phím Space -> Thêm dấu cách
+            sentence += " "
+        elif key == 8: # Phím Backspace -> Xóa 1 ký tự cuối
+            sentence = sentence[:-1]
+        elif key == 13: # Phím Enter -> Đọc câu
+            if sentence.strip():
+                speak_text(sentence)
+        elif key == ord('s'): # Phím 's': Quét 1 frame tĩnh
+            is_processing = True
             
-            for hand_landmarks in results.multi_hand_landmarks:
-                # Vẽ landmarks mờ mờ cho UI sinh động (Real-time tracking loop)
-                mp_drawing.draw_landmarks(
-                    display_frame,
-                    hand_landmarks,
-                    mp_hands.HAND_CONNECTIONS,
-                    mp_drawing_styles.get_default_hand_landmarks_style(),
-                    mp_drawing_styles.get_default_hand_connections_style())
+            # Ép vẽ UI "ĐANG QUÉT" trước khi CPU bị treo vì tính HOG
+            cv2.putText(display_frame, "DANG QUET...", (w//2, h//2), cv2.FONT_HERSHEY_DUPLEX, 2.0, (0, 0, 255), 4)
+            cv2.imshow("Hand Sign AI - Point & Shoot", display_frame)
+            cv2.waitKey(1)
             
-            # Sử dụng hàm cũ trong pipeline của bạn để lấy data
+            # 1. Trộn MediaPipe và HOG
             features = extract_landmarks(frame)
             
             if features is not None:
-                # Trích xuất đúng tên cột nếu có
-                if train_feature_names is not None:
-                    df_input = pd.DataFrame([features], columns=train_feature_names)
-                else:
-                    df_input = pd.DataFrame([features])
+                # 2. Xử lý qua numpy siêu tốc
+                X_array = np.array(features, dtype=np.float32).reshape(1, -1)
                 
-                # Inference Tier 1: XGBoost (Tổng quát)
-                y_pred_xgb = model_general.predict(df_input)[0]
+                # 3. XGBoost Tier 1
+                y_pred_xgb = model_general.predict(X_array)[0]
                 pred_label_str = le.inverse_transform([y_pred_xgb])[0]
                 
-                # Inference Tier 2: SVM (Chuyên gia nếu gặp khó khăn)
+                # 4. SVM Tier 2
                 final_label_str = pred_label_str
-                
                 for exp_name, config in expert_configs.items():
                     if pred_label_str in config['classes']:
                         expert_model = experts.get(exp_name)
                         if expert_model:
                             weapons = config['weapons']
-                            row_weapons = df_input[weapons]
+                            if train_feature_names:
+                                weapon_indices = [train_feature_names.index(w) for w in weapons if w in train_feature_names]
+                                row_weapons = X_array[:, weapon_indices]
+                            else:
+                                # Fallback nếu model cũ không có feature_names
+                                import pandas as pd
+                                df_input = pd.DataFrame([features])
+                                if getattr(model_general, 'feature_names_in_', None) is not None:
+                                    df_input.columns = model_general.feature_names_in_
+                                row_weapons = df_input[weapons]
+                                
                             final_label_str = expert_model.predict(row_weapons)[0]
                         break
                 
-                predicted_char = final_label_str
-                prediction_buffer.append(predicted_char)
+                last_prediction = final_label_str
+                # Tự động gắn kết quả tĩnh vào câu
+                if final_label_str != "del" and final_label_str != "space" and final_label_str != "nothing":
+                    sentence += final_label_str
+                elif final_label_str == "space":
+                    sentence += " "
+                elif final_label_str == "del":
+                    sentence = sentence[:-1]
+            else:
+                last_prediction = "Khong tim thay tay"
                 
-                # Kiểm tra Word Buffer: Chỉ nhận từ nếu 10/15 frame liên tiếp đều dự đoán chung 1 chữ
-                if len(prediction_buffer) == prediction_buffer.maxlen:
-                    most_common = max(set(prediction_buffer), key=prediction_buffer.count)
-                    count = prediction_buffer.count(most_common)
-                    
-                    if count >= 10 and most_common != last_word:
-                        if most_common == "space" or most_common == "nothing":
-                            current_sentence += " "
-                            last_word = "space"
-                        elif most_common == "del":
-                            current_sentence = current_sentence[:-1]
-                            last_word = "del"
-                        else:
-                            current_sentence += most_common
-                            last_word = most_common
-                        
-                        # Xóa buffer để nhận diện từ tiếp theo tránh bị kẹp phím
-                        prediction_buffer.clear()
-                        
-                        # Nếu câu quá dài, tự xén
-                        if len(current_sentence) > 40:
-                            current_sentence = current_sentence[-40:]
-                            
-        else:
-            # Ko thấy tay -> clear buffer để thả lỏng
-            prediction_buffer.clear()
-            last_word = ""
-
-        # --- PHASE: HIỂN THỊ KẾT QUẢ & UI ---
-        # Panel dưới cùng hiển thị câu
-        cv2.rectangle(display_frame, (0, h-100), (w, h), (0, 0, 0), cv2.FILLED)
-        cv2.putText(display_frame, f"Sentence: {current_sentence}", (20, h-40), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 255), 3)
-        
-        # Chữ đang nhận diện thời gian thực thả trôi lơ lửng gần Ghost Frame
-        if predicted_char:
-            cv2.putText(display_frame, f"[{predicted_char}]", (w//2 + 220, h//2), cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 0, 255), 3)
-            
-        # Nút ảo Hướng dẫn
-        cv2.putText(display_frame, "Press 'Enter' to Speak text", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        cv2.putText(display_frame, "Press 'Backspace' to Delete", (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
-        cv2.putText(display_frame, "Press 'Space' to Add Space", (20, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
-        cv2.putText(display_frame, "Press 'q' to Quit", (20, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (100, 100, 200), 2)
-
-        cv2.imshow("Hand Sign AI", display_frame)
-        
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
-            break
-        elif key == 13: # Enter: Phát tiếng
-            speak_text(current_sentence)
-        elif key == 8: # Backspace: Xóa kí tự
-            current_sentence = current_sentence[:-1]
-        elif key == 32: # Phím Space: Dấu cách
-            current_sentence += " "
-        elif key == ord('c'): # Clear: Xóa toàn bộ
-            current_sentence = ""
+            is_processing = False
 
     cap.release()
     cv2.destroyAllWindows()

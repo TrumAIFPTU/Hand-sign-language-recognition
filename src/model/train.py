@@ -21,25 +21,44 @@ def read_datasets():
 def train_model():
     df_train, df_test = read_datasets()
 
+    # Tách X và y
     X_train = df_train.drop('Label', axis=1)
     y_train_raw = df_train['Label'].astype(str)
     X_test = df_test.drop('Label', axis=1)
     y_test_raw = df_test['Label'].astype(str)
+    
+    # BẮT BUỘC: Ép kiểu toàn bộ X về dạng Float/Numeric vì XGBoost không nhận 'object' (string)
+    X_train = X_train.apply(pd.to_numeric, errors='coerce').fillna(0).astype('float32')
+    X_test = X_test.apply(pd.to_numeric, errors='coerce').fillna(0).astype('float32')
     
     le = LabelEncoder()
     y_train_encoded = le.fit_transform(y_train_raw)
     y_test_encoded = le.transform(y_test_raw)
 
     print("--- Đang huấn luyện Tầng 1: XGBoost ---")
-    model_general = xgb.XGBClassifier(
-        max_depth=8,              
-        learning_rate=0.03,       
-        n_estimators=700,         
-        tree_method='hist',
-        device='cuda', 
-        random_state=42
-    )
-    model_general.fit(X_train, y_train_encoded)
+    try:
+        model_general = xgb.XGBClassifier(
+            max_depth=8,              
+            learning_rate=0.03,       
+            n_estimators=700,         
+            tree_method='hist',
+            device='cuda', 
+            random_state=42
+        )
+        model_general.fit(X_train, y_train_encoded)
+        print("[THÀNH CÔNG] XGBoost đang sử dụng GPU (CUDA) để huấn luyện siêu tốc!")
+    except Exception as e:
+        print(f"[CẢNH BÁO] GPU không khả dụng. Tự động chuyển XGBoost sang đa nhân CPU (n_jobs=-1)...")
+        model_general = xgb.XGBClassifier(
+            max_depth=8,              
+            learning_rate=0.03,       
+            n_estimators=700,         
+            tree_method='hist',
+            device='cpu',
+            n_jobs=-1,
+            random_state=42
+        )
+        model_general.fit(X_train, y_train_encoded)
 
 
     expert_configs = {
@@ -70,6 +89,11 @@ def train_model():
         print(f"--- Đang huấn luyện SVM cho cụm: {config['classes']} ---")
         df_sub = df_train[df_train['Label'].isin(config['classes'])]
         
+        # BẢO VỆ CHỐNG TRÀN ZERO-LENGHT ARRAY KHI THIẾU DATA
+        if len(df_sub) < 5:
+            print(f"[CẢNH BÁO] Cụm {config['classes']} KHÔNG ĐỦ DỮ LIỆU ({len(df_sub)} ảnh). Đã bỏ qua SVM này để tránh Crash.")
+            continue
+            
         kernel_type = 'rbf' 
         
         clf = make_pipeline(
